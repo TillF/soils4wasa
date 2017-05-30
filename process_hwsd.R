@@ -1,15 +1,21 @@
-# process HWSD raster file
-# download from http://webarchive.iiasa.ac.at/Research/LUC/External-World-soil-database/HTML/HWSD_Data.html?sb=4
-# data is cropped to the target region
-# specified soil property raster files and raster with soil IDs and FAO90 names are loaded into the respective location in GRASS
-#
-# grass location needs to exist already
+# extract soil information from HWSD-database for parameterizing WASA-SED for target region
+# - imports cropped map(s) to GRASS
+# - processes required soil properties to derive required input for WASA-SED
+
+# -----------------------------------------------------------------------
+
+# requirements:
+# - existing GRASS-GIS location of required extent
+# - HWSD-files (http://webarchive.iiasa.ac.at/Research/LUC/External-World-soil-database/HTML/HWSD_Data.html?sb=4)
+#   - raster file (hwsd.bil) 
+#   - db-file: export table HWSD_DATA as HWSD_DATA.csv (header line, comma as separator, . as decimal, no quotes)
+
 # 
 # HWSD database 2 options:
 # 1) HWSD database in SQLite format (converted from MS Access)
 # 2) database as csv table with all relevant information already extracted from database
 #
-# ATTENTION: depending on the size of your target area the script might need lots of computer ressources (time + memory)
+# ATTENTION: depending on the size of your target area, the script might need lots of computer ressources (time + memory)
 # If an error occurs during executing of GRASS commands, manual garbage collection
 # by applying 'gc()' multiple times in a row sometimes helps.
 #
@@ -45,27 +51,28 @@ library(rgdal)
 library(maptools)
 
 ### SETTINGS ###
-setwd("/home/tobias/Promotion/Modellierung/Bengue/Preprocessing/soil_parameters/HWSD/extract_data/")
+#setwd("/home/tobias/Promotion/Modellierung/Bengue/Preprocessing/soil_parameters/HWSD/extract_data/")
 
-# start GRASS session
-initGRASS( gisBase="/opt/grass",
-           home=tempdir(),
-           location="Bengue",
-           mapset="PERMANENT",
-           gisDbase="/home/tobias/Promotion/Modellierung/Bengue/grassdata",
-           override=T)
+GRASSBase <- "d:/programme/GRASS6.4.3"
+LOC <- "dez3" # GRASS location
+MAPS <- "PERMANENT" # corresponding mapset
+GISBase <- "e:/till/uni/grass-db" # path to grass data containing the location specified above and all corresp. data
+HOMEDIR <- tempdir()
 
 # overwrite when writing output into GRASS location?
 ov_flag=T
 
 # raster data file (the .hwd and .hdr files have to be in the directory as well!)
-hwsd_file <- "/home/tobias/Promotion/Modellierung/Jaguaribe/Data/HWSD/data_raw/hwsd.bil"
+hwsd_file <- "e:/till/uni/grass/hwsd/hwsd.bil"
+
+# name of the HWSD database (has to be in SQLite format (*.db) OR a csv table (*.csv))
+db_file <- "e:/till/uni/grass/hwsd/HWSD_DATA.csv"
+
+# mask to define GRASS region
+mask_reg <- "MASK_corr"
 
 # projection string of hwsd file (shouldn't need to be changed)
 hwsd_proj <- "+proj=longlat +datum=WGS84 +ellps=WGS84 +towgs84=0,0,0"
-
-# name of the HWSD database (has to be in SQLite format (*.db) OR a csv table (*.csv))
-db_file <- "/home/tobias/Promotion/Modellierung/Jaguaribe/Data/HWSD/HWSD_DATA.csv"
 
 # specify soil properties that should be extracted from the database
 # a raster file for each soil property is created and written into grass as "HWSD_[name]"
@@ -73,12 +80,18 @@ db_file <- "/home/tobias/Promotion/Modellierung/Jaguaribe/Data/HWSD/HWSD_DATA.cs
 soil_tables <- c("REF_DEPTH",
                  "T_GRAVEL", "T_SILT", "T_CLAY", "T_BULK_DENSITY", "T_OC", "T_SAND",
                  "S_GRAVEL", "S_SILT", "S_CLAY", "S_BULK_DENSITY", "S_OC", "S_SAND")
-
-# mask to define GRASS region
-mask_reg <- "MASK_corr"
+### end settings ###
 
 
 ### CALCULATIONS ###
+# start GRASS session
+initGRASS( gisBase=GRASSBase,
+           home=HOMEDIR,
+           location=LOC,
+           mapset=MAPS,
+           gisDbase=GISBase,
+           override=TRUE)
+
 # remove existing mask from location
 execGRASS("r.mask", flags=c("r"))
 # use standard region setting
@@ -91,7 +104,10 @@ hwsd <- raster(hwsd_file)
 proj4string(hwsd) <- hwsd_proj
 
 # grass region extent in longlat coordinates
-loc_info <- attr(execGRASS("g.region", flags=c("b", "g")), "resOut")
+
+
+loc_info <- execGRASS("g.region", flags=c("b", "g"), intern=TRUE) #works for Windows
+#loc_info <- attr(execGRASS("g.region", flags=c("b", "g")), "resOut") #fails in Windows, works in Linux?
 loc_info <- as.numeric(gsub("[a-z_=]*", "", loc_info))
 
 # crop hwsd to extent of grass location (slightly larger in case of small deviations from utm projection)
@@ -111,9 +127,11 @@ values(hwsd_crop_proj)[which(getValues(hwsd_crop_proj) == 0)] <- NA
 
 # the following workaround is cumbersome but I had problems directly converting raster to SGDF
 # save as raster file
-writeRaster(hwsd_crop_proj, "temp/soils", format="EHdr", overwrite=ov_flag)
+tfile <- tempfile()
+writeRaster(hwsd_crop_proj, tfile, format="EHdr", overwrite=ov_flag)
 # load raster file
-hwsd_crop_proj_sgdf <- readGDAL("temp/soils")
+hwsd_crop_proj_sgdf <- readGDAL(tfile)
+file.remove(dir(pattern = paste0("^",tfile)))
 # convert to integer
 hwsd_crop_proj_sgdf@data[[1]] <- as.integer(hwsd_crop_proj_sgdf@data[[1]])
 # load map with soil IDs into grass
@@ -122,6 +140,8 @@ gc() # manual garbage collection
 gc() # manual garbage collection
 gc() # manual garbage collection
 writeRAST6(hwsd_crop_proj_sgdf, "HWSD_soils", overwrite=ov_flag, flags=c("o"))
+
+
 
 # specify as mask
 #execGRASS("r.mask", parameters=list(input="HWSD_soils"))
@@ -138,19 +158,20 @@ if (grepl("*.db", db_file)) {
 
 # FAO90 names as category labels in raster file
 # loop over soil types
-write(x=NULL,file="temp/soil_cat",append=F)
+tfile <- tempfile()
+write(x=NULL,file=tfile <- tempfile(),append=F)
 for (s in unique(hwsd_crop_proj)) {
   # main soil type (first occurence of certain soil type (MU_GLOBAL))
   cat_string <- paste(as.vector(as.matrix(dat_all[which(dat_all$MU_GLOBAL == s),c("SYMBOL_90","VALUE_90")][1,])), collapse=" - ")
   cat_string <- paste(s,cat_string,sep=":")
   
   # create reclassification file
-  write(x=cat_string,file="temp/soil_cat",append=T)
+  write(x=cat_string,file=tfile,append=T)
 }
 
 # classify raster file
-execGRASS("r.category", parameters=list(map="HWSD_soils", rules="temp/soil_cat"))
-
+execGRASS("r.category", parameters=list(map="HWSD_soils", rules=tfile))
+file.remove(tfile)
 
 # create necessary tables
 for (t in soil_tables) {
@@ -179,10 +200,12 @@ for (t in soil_tables) {
   
   # the following workaround is cumbersome but I had problems directly converting raster to SGDF
   # save as raster file
-  writeRaster(rast, paste0("temp/",t), format="EHdr", overwrite=ov_flag)
+  writeRaster(rast, paste0(tfile), format="EHdr", overwrite=ov_flag)
   
   # load raster file
-  rast <- readGDAL(paste0("temp/",t))
+  rast <- readGDAL(paste0(tfile))
+  
+  file.remove(tfile)
   
   # write into grass location
   writeRAST6(rast, paste0("HWSD_", t), overwrite=ov_flag, flags=c("o"))
